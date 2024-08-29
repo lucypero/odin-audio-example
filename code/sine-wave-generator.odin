@@ -55,6 +55,7 @@ main :: proc() {
 	// chan.send(channel, KeyEvent{1, 200, true})
 	// chan.send(channel, KeyEvent{0, 300, true})
 	// chan.send(channel, KeyEvent{3, 400, true})
+	channels = make([]Channel, 3)
 
 	rl.InitWindow(screen_width, screen_height, "Sine Wave Generator")
 	rl.SetTargetFPS(60)
@@ -94,7 +95,6 @@ main :: proc() {
 
 	// start separate thread for generating audio samples
 	// pass in a pointer to "app" as the data
-	thread.run_with_data(&app, sample_generator_thread_proc)
 
 	// main loop
 	for !rl.WindowShouldClose() {
@@ -186,18 +186,61 @@ audio_quit :: proc() {
 audio_callback :: proc(device: ^ma.device, output, input: rawptr, frame_count: u32) {
 	buffer_size := int(frame_count * OUTPUT_NUM_CHANNELS)
 
+	a := (^App)(&app)
+
+
+	time_to_max :: 0.2 // in seconds. how much time for maximum amplitude
+	time_sample :: 1 / f32(OUTPUT_SAMPLE_RATE)
+	increment := map_range(time_sample, 0, time_to_max, 0, 1)
+
 	// get device buffer
 	device_buffer := mem.slice_ptr((^f32)(output), buffer_size)
 
-	// if there are enough samples written to the ring buffer to fill the device buffer, read them
-	if app.ring_buffer.written > buffer_size {
-		sync.lock(&app.mutex)
-		buffer_read(device_buffer, &app.ring_buffer, true)
-		sync.unlock(&app.mutex)
+	// processing key events
+	data, ok := chan.try_recv(data_channel)
+	if ok {
+		// fmt.printfln("key %v", data)
+		if data.pressed {
+			channels[data.key].time_start = a.time
+			channels[data.key].freq = data.freq
+			channels[data.key].is_pressed = true
+		} else {
+			channels[data.key].time_end = a.time
+			channels[data.key].is_pressed = false
+		}
 	}
 
-	// if the ring buffer is at least half empty, tell the sampler generator to start up again
-	if app.ring_buffer.written < len(app.ring_buffer.data) / 2 do sync.sema_post(&app.sema)
+	for i in 0 ..< len(device_buffer) {
+
+		total_sample: f32 = 0
+
+		for &channel, i in channels {
+			amp := channel.last_amp
+			amp += channel.is_pressed ? increment : -increment
+			amp = math.clamp(amp, 0, 1)
+
+			channel.last_amp = amp
+			sample := math.sin(f32(math.PI) * 2 * channel.freq * a.time) * amp
+			total_sample += sample
+
+			if amp > 1 {
+				fmt.println("channel: it's over 1")
+			}
+		}
+
+		total_sample /= 3
+
+		if total_sample > 1 || total_sample < -1 {
+			fmt.println("sample: it's over 1")
+		}
+
+		device_buffer[i] = total_sample
+
+		// buffer_write_sample(&a.ring_buffer, total_sample, true)
+
+		// advance the time
+		a.time += 1 / f32(OUTPUT_SAMPLE_RATE)
+	}
 }
 
 Channel :: struct {
@@ -209,72 +252,6 @@ Channel :: struct {
 }
 
 channels: []Channel
-
-sample_generator_thread_proc :: proc(data: rawptr) {
-	// cast the "data" we passed into the thread to an ^App
-	a := (^App)(data)
-
-	channels = make([]Channel, 3)
-
-	time_to_max :: 0.2 // in seconds. how much time for maximum amplitude
-	time_sample :: 1 / f32(OUTPUT_SAMPLE_RATE)
-	increment := map_range(time_sample, 0, time_to_max, 0, 1)
-
-	// loop infinitely in this new thread
-	for {
-
-		// we only want write new samples if there is enough "free" space in the ring buffer
-		// so stall the thread if we've filled over half the buffer
-		// and wait until the audio callback calls sema_post()
-		for a.ring_buffer.written > len(app.ring_buffer.data) / 2 do sync.sema_wait(&a.sema)
-
-		// processing key events
-		data, ok := chan.try_recv(data_channel)
-		if ok {
-			// fmt.printfln("key %v", data)
-			if data.pressed {
-				channels[data.key].time_start = a.time
-				channels[data.key].freq = data.freq
-				channels[data.key].is_pressed = true
-			} else {
-				channels[data.key].time_end = a.time
-				channels[data.key].is_pressed = false
-			}
-		}
-
-		sync.lock(&a.mutex)
-		for i in 0 ..< a.buffer_size {
-
-			total_sample: f32 = 0
-
-			for &channel, i in channels {
-				amp := channel.last_amp
-				amp += channel.is_pressed ? increment : -increment
-				amp = math.clamp(amp, 0, 1)
-
-				channel.last_amp = amp
-				sample := math.sin(f32(math.PI) * 2 * channel.freq * a.time) * amp
-				total_sample += sample
-
-				if amp > 1 {
-					fmt.println("channel: it's over 1")
-				}
-			}
-
-			total_sample /= 3
-
-			if total_sample > 1 || total_sample < -1 {
-				fmt.println("sample: it's over 1")
-			}
-
-			buffer_write_sample(&a.ring_buffer, total_sample, true)
-
-			// advance the time
-			a.time += 1 / f32(OUTPUT_SAMPLE_RATE)
-		}
-		sync.unlock(&a.mutex)
-	}
-}
 
 // simple ring buffer
 Buffer :: struct {
