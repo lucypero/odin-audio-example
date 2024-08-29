@@ -14,9 +14,8 @@ import "core:time"
 import ma "vendor:miniaudio"
 import rl "vendor:raylib"
 
-AUDIO_BUFFER_TYPE :: f32
 OUTPUT_NUM_CHANNELS :: 1
-OUTPUT_SAMPLE_RATE :: 48000
+OUTPUT_SAMPLE_RATE :: 44100
 PREFERRED_BUFFER_SIZE :: 512
 OUTPUT_BUFFER_SIZE :: OUTPUT_SAMPLE_RATE * size_of(f32) * OUTPUT_NUM_CHANNELS
 
@@ -330,9 +329,10 @@ sample_generator_thread_proc :: proc(data: rawptr) {
 			for &channel in channels {
 				amp := do_adsr(&channel, a.time)
 				channel.last_amp = amp
-				sample := math.sin(f32(math.PI) * 2 * channel.freq * f32(a.time)) * amp
-				channel.last_sample = sample
-				total_sample += sample
+
+				sample :f64 = math.sin_f64(math.PI * 2 * f64(channel.freq) * a.time) * f64(amp)
+				channel.last_sample = f32(sample)
+				total_sample += f32(sample)
 			}
 
 			total_sample /= 3
