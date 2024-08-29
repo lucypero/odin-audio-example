@@ -174,7 +174,7 @@ main :: proc() {
 calc_freq_from_midi_note :: proc(note: f32) -> f32 {
 	note := note - 9
 	hz := 27.5 * math.pow(2, (note / 12))
-	fmt.println("New frequency:", hz)
+	// fmt.println("New frequency:", hz)
 	return hz
 }
 
@@ -201,8 +201,8 @@ audio_callback :: proc(device: ^ma.device, output, input: rawptr, frame_count: u
 }
 
 Channel :: struct {
-	time_start: f32,
-	time_end:   f32,
+	time_start: f32, // not used rn
+	time_end:   f32, // not used rn
 	freq:       f32,
 	is_pressed: bool,
 	last_amp:   f32,
@@ -231,7 +231,6 @@ sample_generator_thread_proc :: proc(data: rawptr) {
 		// processing key events
 		data, ok := chan.try_recv(data_channel)
 		if ok {
-			// fmt.printfln("key %v", data)
 			if data.pressed {
 				channels[data.key].time_start = a.time
 				channels[data.key].freq = data.freq
@@ -255,18 +254,9 @@ sample_generator_thread_proc :: proc(data: rawptr) {
 				channel.last_amp = amp
 				sample := math.sin(f32(math.PI) * 2 * channel.freq * a.time) * amp
 				total_sample += sample
-
-				if amp > 1 {
-					fmt.println("channel: it's over 1")
-				}
 			}
 
 			total_sample /= 3
-
-			if total_sample > 1 || total_sample < -1 {
-				fmt.println("sample: it's over 1")
-			}
-
 			buffer_write_sample(&a.ring_buffer, total_sample, true)
 
 			// advance the time
