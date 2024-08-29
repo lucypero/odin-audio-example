@@ -246,7 +246,7 @@ sample_generator_thread_proc :: proc(data: rawptr) {
 
 			total_sample: f32 = 0
 
-			for &channel, i in channels {
+			for &channel in channels {
 				amp := channel.last_amp
 				amp += channel.is_pressed ? increment : -increment
 				amp = math.clamp(amp, 0, 1)
