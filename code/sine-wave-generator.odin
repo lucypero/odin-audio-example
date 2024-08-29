@@ -21,7 +21,7 @@ PREFERRED_BUFFER_SIZE :: 512
 OUTPUT_BUFFER_SIZE :: OUTPUT_SAMPLE_RATE * size_of(f32) * OUTPUT_NUM_CHANNELS
 
 App :: struct {
-	time:        f32,
+	time:        f64,
 	device:      ma.device,
 	buffer_size: int,
 	ring_buffer: Buffer,
@@ -105,25 +105,45 @@ main :: proc() {
 		// rl.DrawText("Press Key:", 200, 150, 60, rl.WHITE)
 
 		for channel, i in channels {
-			rl.DrawText(rl.TextFormat("Channel: %i", i), 50 + i32(i) * 200, 50, 25, rl.WHITE)
+
+			root_pos_x: i32 = 50
+			root_pos_y: i32 = 50
+
+
+			row_pos := i
+
+			if i > 4 {
+				root_pos_y = 700
+				row_pos = i - 5
+			} else {
+
+			}
+
+			rl.DrawText(
+				rl.TextFormat("Channel: %i", i),
+				root_pos_x + i32(row_pos) * 200,
+				root_pos_y,
+				25,
+				rl.WHITE,
+			)
 			rl.DrawText(
 				rl.TextFormat("Freq: %f", channel.freq),
-				50 + i32(i) * 200,
-				100,
+				root_pos_x + i32(row_pos) * 200,
+				root_pos_y + 50,
 				25,
 				rl.WHITE,
 			)
 			rl.DrawText(
 				rl.TextFormat("is pressed: %i", channel.is_pressed ? 1 : 0),
-				50 + i32(i) * 200,
-				150,
+				root_pos_x + i32(row_pos) * 200,
+				root_pos_y + 100,
 				25,
 				rl.WHITE,
 			)
 			rl.DrawText(
 				rl.TextFormat("last_amp: %f", channel.last_amp),
-				50 + i32(i) * 200,
-				200,
+				root_pos_x + i32(row_pos) * 200,
+				root_pos_y + 150,
 				25,
 				rl.WHITE,
 			)
@@ -150,32 +170,25 @@ main :: proc() {
 		//     | s | d |    | g | h | j |
 		//   | z | x | c | v | b | n | m |
 
-		notes := []f32{60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71}
-		keyboard_keys := []rl.KeyboardKey{.Z, .X, .C}
+		notes := []f32{523.251, 587.330, 659.255, 698.456, 783.991, 880, 987.767, 1046.5}
+		keyboard_keys := []rl.KeyboardKey{.Z, .X, .C, .V, .B, .N, .M, .COMMA}
 
 		for key, ki in keyboard_keys {
 			// draw keyboard
 
+			freq := notes[ki]
+
 			// get note frequency from key presses
 			if rl.IsKeyPressed(key) {
-				freq := calc_freq_from_midi_note(notes[ki])
-				chan.send(data_channel, KeyEvent{ki % 3, freq, true})
+				chan.send(data_channel, KeyEvent{ki, freq, true})
 			}
 
 			if rl.IsKeyReleased(key) {
-				freq := calc_freq_from_midi_note(notes[ki])
-				chan.send(data_channel, KeyEvent{ki % 3, freq, false})
+				chan.send(data_channel, KeyEvent{ki, freq, false})
 			}
 		}
 	}
 	audio_quit()
-}
-
-calc_freq_from_midi_note :: proc(note: f32) -> f32 {
-	note := note - 9
-	hz := 27.5 * math.pow(2, (note / 12))
-	// fmt.println("New frequency:", hz)
-	return hz
 }
 
 audio_quit :: proc() {
@@ -201,24 +214,91 @@ audio_callback :: proc(device: ^ma.device, output, input: rawptr, frame_count: u
 }
 
 Channel :: struct {
-	time_start: f32, // not used rn
-	time_end:   f32, // not used rn
-	freq:       f32,
-	is_pressed: bool,
-	last_amp:   f32,
+	time_start:   f32, // not used rn
+	time_end:     f32, // not used rn
+	freq:         f32,
+	is_pressed:   bool,
+	last_amp:     f32,
+	is_releasing: bool,
+	last_sample:  f32,
 }
 
 channels: []Channel
+
+
+do_adsr :: proc(channel: ^Channel, time: f64) -> f32 {
+
+	time_to_max :: 0.2 // in seconds. how much time for maximum amplitude
+	time_sample :: 1 / f32(OUTPUT_SAMPLE_RATE)
+	increment := map_range(time_sample, 0, time_to_max, 0, 1)
+
+	// do ads or release?
+
+	// envelope
+	diff_time := f32(time) - channel.time_start
+
+	amp: f32 = 0
+
+	attack_time :: 0.05
+	attack_amp :: 1
+	decay_time :: 0.05
+	sustain_amp :: 0.5
+
+	do_ads: bool = false
+
+	wants_to_attack: bool
+
+
+	if channel.is_pressed {
+
+		// wait to go into attack when the last amp is close to 0
+		if (channel.is_releasing && math.abs(channel.last_amp) <= 0.001) {
+			do_ads = true
+			channel.time_start = f32(time)
+			diff_time = 0
+		} else if channel.is_releasing {
+			// accelerate release flag
+			wants_to_attack = true
+		}
+
+		if (!channel.is_releasing) {
+			do_ads = true
+		}
+	}
+
+	if do_ads {
+		// it's on attack?
+		if diff_time <= attack_time {
+			// calculate attack
+			amp = map_range(diff_time, 0, attack_time, 0, attack_amp)
+		} else {
+			// calculate sustain
+			amp = map_range(diff_time - attack_time, 0, decay_time, attack_amp, sustain_amp)
+
+			if amp < sustain_amp {
+				amp = sustain_amp
+			}
+		}
+		channel.is_releasing = false
+	} else {
+
+		// accelerate release if you want to attack
+		if wants_to_attack {
+			amp = channel.last_amp - (increment * 3)
+		} else {
+			amp = channel.last_amp - increment
+		}
+	}
+
+	amp = math.clamp(amp, 0, 1)
+	return amp
+}
 
 sample_generator_thread_proc :: proc(data: rawptr) {
 	// cast the "data" we passed into the thread to an ^App
 	a := (^App)(data)
 
-	channels = make([]Channel, 3)
-
-	time_to_max :: 0.2 // in seconds. how much time for maximum amplitude
-	time_sample :: 1 / f32(OUTPUT_SAMPLE_RATE)
-	increment := map_range(time_sample, 0, time_to_max, 0, 1)
+	channels = make([]Channel, 8)
 
 	// loop infinitely in this new thread
 	for {
@@ -232,12 +312,13 @@ sample_generator_thread_proc :: proc(data: rawptr) {
 		data, ok := chan.try_recv(data_channel)
 		if ok {
 			if data.pressed {
-				channels[data.key].time_start = a.time
+				channels[data.key].time_start = f32(a.time)
 				channels[data.key].freq = data.freq
 				channels[data.key].is_pressed = true
 			} else {
-				channels[data.key].time_end = a.time
+				channels[data.key].time_end = f32(a.time)
 				channels[data.key].is_pressed = false
+				channels[data.key].is_releasing = true
 			}
 		}
 
@@ -247,12 +328,10 @@ sample_generator_thread_proc :: proc(data: rawptr) {
 			total_sample: f32 = 0
 
 			for &channel in channels {
-				amp := channel.last_amp
-				amp += channel.is_pressed ? increment : -increment
-				amp = math.clamp(amp, 0, 1)
-
+				amp := do_adsr(&channel, a.time)
 				channel.last_amp = amp
-				sample := math.sin(f32(math.PI) * 2 * channel.freq * a.time) * amp
+				sample := math.sin(f32(math.PI) * 2 * channel.freq * f32(a.time)) * amp
+				channel.last_sample = sample
 				total_sample += sample
 			}
 
@@ -260,7 +339,7 @@ sample_generator_thread_proc :: proc(data: rawptr) {
 			buffer_write_sample(&a.ring_buffer, total_sample, true)
 
 			// advance the time
-			a.time += 1 / f32(OUTPUT_SAMPLE_RATE)
+			a.time += 1 / f64(OUTPUT_SAMPLE_RATE)
 		}
 		sync.unlock(&a.mutex)
 	}
