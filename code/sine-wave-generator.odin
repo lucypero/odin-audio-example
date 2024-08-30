@@ -19,6 +19,10 @@ OUTPUT_SAMPLE_RATE :: 44100
 PREFERRED_BUFFER_SIZE :: 512
 OUTPUT_BUFFER_SIZE :: OUTPUT_SAMPLE_RATE * size_of(f32) * OUTPUT_NUM_CHANNELS
 
+// square wave testing
+duty_cycle_mode: int
+harmonics: f32 = 18
+
 App :: struct {
 	time:        f64,
 	device:      ma.device,
@@ -149,27 +153,22 @@ main :: proc() {
 		}
 
 		// Draw the current buffer state proportionate to the screen
+
+		// notes := []f32{523.251, 587.330, 659.255, 698.456, 783.991, 880, 987.767, 1046.5}
+		notes := []f32{45, 110, 220, 659.255, 698.456, 783.991, 880, 987.767}
+
 		for i in 0 ..< screen_width {
 			position: rl.Vector2
 			position.x = f32(i)
-
-			to_sample_idx := app.ring_buffer.read_pos + i
-			if to_sample_idx >= len(app.ring_buffer.data) {
-				to_sample_idx -= len(app.ring_buffer.data)
-			}
-
-			audio_val := app.ring_buffer.data[to_sample_idx]
-
-			position.y = 500 + 50 * f32(audio_val)
+			audio_val := sample_triangle_wave(notes[0], f64(i) * 2 / f64(screen_width * notes[0]))
+			position.y = 500 + 100 * f32(audio_val)
 			rl.DrawPixelV(position, rl.RED)
 		}
-
 
 		// KEYS
 		//     | s | d |    | g | h | j |
 		//   | z | x | c | v | b | n | m |
 
-		notes := []f32{523.251, 587.330, 659.255, 698.456, 783.991, 880, 987.767, 1046.5}
 		keyboard_keys := []rl.KeyboardKey{.Z, .X, .C, .V, .B, .N, .M, .COMMA}
 
 		for key, ki in keyboard_keys {
@@ -186,6 +185,30 @@ main :: proc() {
 				chan.send(data_channel, KeyEvent{ki, freq, false})
 			}
 		}
+
+		if rl.IsKeyPressed(.KP_8) {
+			duty_cycle_mode = (duty_cycle_mode - 1)
+			if duty_cycle_mode < 0 {
+				duty_cycle_mode = 3
+			}
+		}
+		if rl.IsKeyPressed(.KP_9) {
+			duty_cycle_mode = (duty_cycle_mode + 1) % 4
+		}
+		if rl.IsKeyPressed(.KP_5) {
+			harmonics -= 1
+		}
+		if rl.IsKeyPressed(.KP_6) {
+			harmonics += 1
+		}
+
+		rl.DrawText(
+			rl.TextFormat("DC: %i, Harmonics: %f", duty_cycle_mode, harmonics),
+			10,
+			screen_height - 50,
+			20,
+			rl.WHITE,
+		)
 	}
 	audio_quit()
 }
@@ -227,7 +250,7 @@ channels: []Channel
 
 do_adsr :: proc(channel: ^Channel, time: f64) -> f32 {
 
-	time_to_max :: 0.2 // in seconds. how much time for maximum amplitude
+	time_to_max :: 0.1 // in seconds. how much time for maximum amplitude
 	time_sample :: 1 / f32(OUTPUT_SAMPLE_RATE)
 	increment := map_range(time_sample, 0, time_to_max, 0, 1)
 
@@ -238,10 +261,10 @@ do_adsr :: proc(channel: ^Channel, time: f64) -> f32 {
 
 	amp: f32 = 0
 
-	attack_time :: 0.05
+	attack_time :: 0.001
 	attack_amp :: 1
-	decay_time :: 0.05
-	sustain_amp :: 0.5
+	decay_time :: 0.2
+	sustain_amp :: 0
 
 	do_ads: bool = false
 
@@ -330,7 +353,12 @@ sample_generator_thread_proc :: proc(data: rawptr) {
 				amp := do_adsr(&channel, a.time)
 				channel.last_amp = amp
 
-				sample :f64 = math.sin_f64(math.PI * 2 * f64(channel.freq) * a.time) * f64(amp)
+
+				//do square wave here
+				// sample := sample_square_wave(channel.freq, a.time) * amp
+				sample := sample_triangle_wave(channel.freq, a.time) * amp
+
+				// sample :f64 = math.sin_f64(math.PI * 2 * f64(channel.freq) * a.time) * f64(amp)
 				channel.last_sample = f32(sample)
 				total_sample += f32(sample)
 			}
@@ -343,6 +371,72 @@ sample_generator_thread_proc :: proc(data: rawptr) {
 		}
 		sync.unlock(&a.mutex)
 	}
+}
+
+get_duty_cycle :: proc(mode: int) -> f32 {
+	duty_cycle: f32
+	switch mode {
+	case 0:
+		duty_cycle = 0.125
+	case 1:
+		duty_cycle = 0.25
+	case 2:
+		duty_cycle = 0.50
+	case 3:
+		duty_cycle = 0.75
+	}
+
+	return duty_cycle
+}
+
+// perfect triangle wave
+sample_triangle_wave :: proc(freq: f32, time: f64) -> f32 {
+	period: f32 = 1 / freq
+	top := f32(time) / period
+	return 2 * math.abs(2 * (top - math.floor(top + 0.5))) - 1
+}
+
+
+// perfect square wave
+sample_square_wave :: proc(freq: f32, time: f64) -> f32 {
+
+	duty_cycle := get_duty_cycle(duty_cycle_mode)
+
+	period: f32 = 1 / freq
+	val: f32 = 0
+
+	a := math.mod(f32(time), period)
+
+	fmt.printfln("a %v > dc * p: %v", a, a < duty_cycle * period)
+
+	if a >= 0 && a < duty_cycle * period {
+		val = 1
+	} else {
+		val = -1
+	}
+
+	return val
+}
+
+
+sample_square_wave_complex :: proc(freq: f32, time: f64) -> f32 {
+
+	a, b: f32
+	p: f32 = get_duty_cycle(duty_cycle_mode) * 2 * 3.14159
+
+
+	for n in 1 ..< harmonics {
+
+		n_f := f32(n)
+
+		c := n_f * freq * 2 * 3.14159 * f32(time)
+		a += math.sin(c) / n_f
+		b += math.sin(c - p * n_f) / n_f
+	}
+
+	val := (2 / 3.14159) * (a - b)
+
+	return val
 }
 
 // simple ring buffer
